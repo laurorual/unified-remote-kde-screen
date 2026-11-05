@@ -1,0 +1,48 @@
+name: Publish KDE Screen Remote v1.0.1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/release.yml]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: kde-screen-release-v1.0.1
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch the exact source commit
+        shell: bash
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Validate source and build ZIP
+        shell: bash
+        run: |
+          bash -n install.sh
+          python3 -m py_compile kde_screen_remote_streamer.py scripts/build_release.py
+          python3 scripts/build_release.py
+      - name: Publish release with the changelog
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v1.0.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v1.0.1 already exists; preserving the published release."
+            exit 0
+          fi
+          gh release create v1.0.1 dist/KDE-Screen-Remote.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "KDE Screen Remote v1.0.1" \
+            --notes-file CHANGELOG.md \
+            --latest

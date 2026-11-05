@@ -1,0 +1,25 @@
+# Changelog
+
+## v1.0.1 — 2026-11-05
+
+- Fixed cursor-following zoom stuck at the right edge of a secondary monitor.
+- Receive cursor position and per-output logical geometry together from KWin,
+  matching the captured monitor by name and accounting for its desktop offset.
+- Removed `kscreen-doctor` and its dependency on graphical environment variables
+  inherited by the Unified Remote service.
+- Keep the preview centered if geometry is unavailable instead of using an
+  incorrect monitor origin. Continue reading geometry as frames are captured.
+- Published the remote's source files directly in the repository root.
+- Changed installation to download `KDE-Screen-Remote.zip` from Releases > Latest.
+- Added backups when updating an existing remote and included this changelog in
+  the release ZIP.
+- Documented the separate Wayland keyboard fix for symbols and accented text.
+
+Validation: zoom regression checks for primary/secondary monitors, negative
+origins and logical scaling; live KWin capture without DISPLAY/WAYLAND_DISPLAY.
+End-to-end phone validation remains dependent on the user's receiver test.
+
+## v1.0.0
+
+- Initial KDE Plasma Wayland remote with active-monitor preview, cursor-following
+  zoom, trackpad controls, clicks, two-finger scrolling, right click and dragging.

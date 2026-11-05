@@ -1,0 +1,4 @@
+meta.name: KDE Screen Remote
+meta.author: Lauro Lopes de Abreu Neto
+meta.description: KDE Plasma Wayland screen preview with cursor-follow zoom and multitouch trackpad.
+meta.tags: linux, kde, plasma, wayland, screen, streaming, touchpad

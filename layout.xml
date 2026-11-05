@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layout orientation="portrait">
+    <grid>
+        <row weight="1">
+            <image id="screen" />
+        </row>
+
+        <row weight="wrap">
+            <button id="zoom" text="Zoom: 2×" ontap="cycle_zoom" />
+        </row>
+
+        <row weight="1">
+            <touch
+                id="touch"
+                text="Trackpad"
+                onhold="hold"
+                ontap="tap"
+                ondoubletap="double"
+                ontouchstart="touch_start"
+                ontouchabs="touch_abs"
+                ontouchdelta="touch_delta"
+                ontouchend="touch_end" />
+        </row>
+    </grid>
+</layout>
