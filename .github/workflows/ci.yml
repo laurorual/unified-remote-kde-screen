@@ -1,0 +1,28 @@
+name: Validate KDE Screen Remote
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system Python runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-dbus python3-pil python3-gi
+      - name: Check installer and Python
+        shell: bash
+        run: |
+          export PATH="/usr/bin:$PATH"
+          bash -n install.sh
+          python3 -m py_compile kde_screen_remote_streamer.py
+          python3 -m unittest discover -s tests -v
