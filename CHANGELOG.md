@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-08 — Capture installer checks
+
+- Keep Python capture-helper checks in the screen installer, separate from the
+  Wayland mouse/keyboard installer.
+- Add `--custom-dir`, read-only `--check` and `--no-restart` options.
+- Validate a staged copy of the host Python before replacing a helper, preserve
+  the previous binary/authorization entry in backups and verify the installed copy.
+- Refresh the legacy Bazzite Screen helper when the installed remote references it.
+- Validate the selected Custom directory and shorten the installation README.
+
 ## v1.0.1 — 2026-11-05
 
 - Fixed cursor-following zoom stuck at the right edge of a secondary monitor.

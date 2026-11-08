@@ -10,6 +10,8 @@ REPO_NAME="${KDE_SCREEN_REMOTE_REPO_NAME:-unified-remote-kde-screen}"
 
 HELPER_BIN="/usr/local/libexec/kde-screen-remote-python"
 DESKTOP_FILE="/usr/local/share/applications/org.kdescreenremote.helper.desktop"
+BAZZITE_HELPER_BIN="/usr/local/libexec/bazzite-screen-python"
+BAZZITE_DESKTOP_FILE="/usr/local/share/applications/org.bazzitescreen.helper.desktop"
 WORK_DIR=""
 BACKUP_DIR=""
 
@@ -20,12 +22,54 @@ warn()  { printf '\033[1;33m[WARN]\033[0m %s\n' "$*" >&2; }
 error() { printf '\033[1;31m[ERR ]\033[0m %s\n' "$*" >&2; }
 die()   { error "$*"; exit 1; }
 
-if [[ "${EUID}" -eq 0 ]]; then
-    SUDO=""
-else
-    command -v sudo >/dev/null 2>&1 || die "sudo is required."
-    SUDO="sudo"
-fi
+SUDO=""
+configure_sudo() {
+    if [[ ${EUID} -ne 0 ]]; then
+        command -v sudo >/dev/null 2>&1 || die "sudo is required."
+        SUDO="sudo"
+    fi
+}
+
+capture_python_ok() {
+    [[ -x $1 ]] || return 1
+    timeout 5s "$1" -c 'import dbus; from PIL import Image; from gi.repository import GLib' \
+        </dev/null >/dev/null 2>&1
+}
+
+collect_capture_helpers() {
+    CAPTURE_BINS=("$HELPER_BIN")
+    CAPTURE_DESKTOPS=("$DESKTOP_FILE")
+    local launcher="$1/Bazzite Screen/remote.lua" line configured=''
+    local declaration='^[[:space:]]*local[[:space:]]+python_bin[[:space:]]*=[[:space:]]*"([^"]+)";?[[:space:]]*$'
+    if [[ -f $launcher && -f $1/Bazzite\ Screen/bazzite_screen_streamer.py ]]; then
+        while IFS= read -r line || [[ -n $line ]]; do
+            if [[ $line =~ $declaration ]]; then configured=${BASH_REMATCH[1]}; break; fi
+        done < "$launcher"
+        if [[ $configured == "$BAZZITE_HELPER_BIN" ]]; then
+            CAPTURE_BINS+=("$BAZZITE_HELPER_BIN")
+            CAPTURE_DESKTOPS+=("$BAZZITE_DESKTOP_FILE")
+        elif [[ $configured != "$HELPER_BIN" ]]; then
+            warn "Preserving the custom Bazzite Screen interpreter: ${configured:-unrecognized launcher}."
+        fi
+    fi
+}
+
+check_capture_helpers() {
+    local index binary desktop failed=0
+    for index in "${!CAPTURE_BINS[@]}"; do
+        binary=${CAPTURE_BINS[index]}; desktop=${CAPTURE_DESKTOPS[index]}
+        if capture_python_ok "$binary" &&
+           cmp -s -- "$(readlink -f "$(command -v python3)")" "$binary" &&
+           [[ -f $desktop ]] && grep -Fxq -- "Exec=$binary" "$desktop" &&
+           grep -Fxq -- 'X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2' "$desktop"; then
+            ok "Capture helper is current and its authorization entry is present: $binary"
+        else
+            warn "Capture helper needs installation or refresh: $binary"
+            failed=1
+        fi
+    done
+    (( failed == 0 ))
+}
 
 python_deps_ok() {
     command -v python3 >/dev/null 2>&1 || return 1
@@ -167,23 +211,34 @@ PY
 }
 
 install_authorized_python_helper() {
-    local python_real
+    local python_real staged helper_bin=${1:-$HELPER_BIN} desktop_file=${2:-$DESKTOP_FILE}
     python_real="$(readlink -f "$(command -v python3)")"
 
-    info "Installing authorized Python helper..."
-    if [[ -e "${HELPER_BIN}" ]]; then
-        $SUDO cp -a "${HELPER_BIN}" "${BACKUP_DIR}/kde-screen-remote-python"
+    info "Refreshing capture helper from the current host Python: $helper_bin"
+    capture_python_ok "$python_real" || die "Host Python cannot load the capture dependencies."
+    if [[ -e "${helper_bin}" ]]; then
+        $SUDO cp -a "${helper_bin}" "${BACKUP_DIR}/$(basename -- "$helper_bin")"
     fi
-    if [[ -e "${DESKTOP_FILE}" ]]; then
-        $SUDO cp -a "${DESKTOP_FILE}" "${BACKUP_DIR}/org.kdescreenremote.helper.desktop"
+    if [[ -e "${desktop_file}" ]]; then
+        $SUDO cp -a "${desktop_file}" "${BACKUP_DIR}/$(basename -- "$desktop_file")"
     fi
-    $SUDO install -Dm755 "${python_real}" "${HELPER_BIN}"
+    $SUDO mkdir -p -- "$(dirname -- "$helper_bin")"
+    staged=$($SUDO mktemp -- "$(dirname -- "$helper_bin")/.screen-python-XXXXXX")
+    if ! $SUDO install -m755 "${python_real}" "$staged" || ! capture_python_ok "$staged"; then
+        $SUDO rm -f -- "$staged"
+        die "The copied Python failed validation; the previous capture helper was preserved."
+    fi
+    if ! $SUDO mv -f -- "$staged" "$helper_bin"; then
+        $SUDO rm -f -- "$staged"
+        die "Could not replace the capture helper."
+    fi
 
-    $SUDO tee "${DESKTOP_FILE}" >/dev/null <<EOF
+    $SUDO mkdir -p -- "$(dirname -- "$desktop_file")"
+    $SUDO tee "${desktop_file}" >/dev/null <<EOF
 [Desktop Entry]
 Name=KDE Screen Remote Helper
 Comment=KWin ScreenShot2 helper for Unified Remote
-Exec=${HELPER_BIN}
+Exec=${helper_bin}
 Type=Application
 NoDisplay=true
 Terminal=false
@@ -210,6 +265,21 @@ restart_unified_remote_if_possible() {
 }
 
 main() {
+    local custom_dir="${CUSTOM_REMOTES_DIR:-}" check_only=0 restart=1 index
+    while (( $# )); do
+        case $1 in
+            --custom-dir)
+                [[ $# -ge 2 && -n $2 ]] || die "--custom-dir requires a path."
+                custom_dir=$2; shift 2;;
+            --check) check_only=1; shift;;
+            --no-restart) restart=0; shift;;
+            -h|--help)
+                printf '%s\n' 'Usage: bash install.sh [--custom-dir PATH] [--check] [--no-restart]'
+                printf '%s\n' 'Checks/refreshes the authorized Python capture helpers; --check changes nothing.'
+                return 0;;
+            *) die "Unknown option: $1";;
+        esac
+    done
     printf '\nKDE Screen Remote installer (Latest release)\n\n'
 
     if [[ "${XDG_SESSION_TYPE:-}" != "wayland" ]]; then
@@ -219,10 +289,6 @@ main() {
     if [[ "${XDG_CURRENT_DESKTOP:-}" != *KDE* && "${XDG_CURRENT_DESKTOP:-}" != *Plasma* ]]; then
         warn "Current desktop does not appear to be KDE Plasma."
     fi
-
-    install_dependencies
-
-    local custom_dir="${CUSTOM_REMOTES_DIR:-}"
 
     if [[ -z "${custom_dir}" ]]; then
         printf 'Enter the full path to your Unified Remote remotes/Custom directory:\n> '
@@ -236,6 +302,17 @@ main() {
         custom_dir="${HOME}/${custom_dir#\~/}"
     fi
     [[ "${custom_dir}" == /* ]] || die "Provide an absolute Custom remotes directory."
+    [[ $(basename -- "$custom_dir") == Custom && -d $custom_dir/../Unified/Core ]] ||
+        die "Choose the server's remotes/Custom directory (its sibling Unified/Core must exist)."
+    command -v timeout >/dev/null || die "timeout (coreutils) is required for capture-helper checks."
+    collect_capture_helpers "$custom_dir"
+    if (( check_only )); then
+        all_deps_ok || die "Host Python capture dependencies are unavailable."
+        check_capture_helpers
+        return
+    fi
+    configure_sudo
+    install_dependencies
 
     WORK_DIR="$(mktemp -d)"
     trap 'rm -rf -- "${WORK_DIR}"' EXIT
@@ -246,8 +323,11 @@ main() {
     zip_path="$(download_release_zip)"
 
     install_remote_files "${zip_path}" "${custom_dir}"
-    install_authorized_python_helper
-    restart_unified_remote_if_possible
+    for index in "${!CAPTURE_BINS[@]}"; do
+        install_authorized_python_helper "${CAPTURE_BINS[index]}" "${CAPTURE_DESKTOPS[index]}"
+    done
+    check_capture_helpers || die "Capture-helper verification failed. Backups: $BACKUP_DIR"
+    if (( restart )); then restart_unified_remote_if_possible; fi
 
     printf '\n'
     ok "KDE Screen Remote from Releases > Latest is installed."
