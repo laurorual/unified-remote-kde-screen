@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-08 — Main-branch installer and Python upgrade resilience
+
+- Install or update directly from the current `main` source snapshot; no release ZIP or release workflow is required.
+- Validate host Python 3.9+, Pillow 9.1+, dbus-python and PyGObject, preferring `/usr/bin/python3` over developer SDK interpreters.
+- Request permission before installing missing host packages, explicitly warning before rpm-ostree layering on immutable systems.
+- Refresh the authorized copied Python helper after host upgrades and test capture imports before replacing it.
+- Create transaction backups and roll back remote files, helper binaries and desktop authorization entries after an installation failure.
+- Add isolated installer recovery tests and a GitHub Actions test workflow that does not publish releases.
+
+
 ## v1.0.2 — 2026-11-08
 
 - Fix blue/red channel swaps when KWin returns RGBX8888 or RGBA8888 frames.
