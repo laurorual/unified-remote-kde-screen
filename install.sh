@@ -36,7 +36,7 @@ configure_sudo() {
 
 capture_python_ok() {
     [[ -x $1 ]] || return 1
-    timeout 10s "$1" - <<'PY' </dev/null >/dev/null 2>&1
+    timeout 10s "$1" - <<'PY' >/dev/null 2>&1
 import sys
 if sys.version_info < (3, 9):
     raise SystemExit("Python >= 3.9 required")
