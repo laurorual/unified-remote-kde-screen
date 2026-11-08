@@ -18,6 +18,7 @@ MUTATION_STARTED=0
 HAD_REMOTE=0
 HAD_BIN=()
 HAD_DESKTOP=()
+REMOTE_CUSTOM_DIR=""
 
 # Status messages go to stderr so functions can safely return values on stdout.
 info()  { printf '\033[1;34m[INFO]\033[0m %s\n' "$*" >&2; }
@@ -300,11 +301,11 @@ EOF
 
 snapshot_installation() {
     local index
-    if [[ -e "$custom_dir/$REMOTE_FOLDER" || -L "$custom_dir/$REMOTE_FOLDER" ]]; then
-        [[ -d "$custom_dir/$REMOTE_FOLDER" && ! -L "$custom_dir/$REMOTE_FOLDER" ]] ||
+    if [[ -e "$REMOTE_CUSTOM_DIR/$REMOTE_FOLDER" || -L "$REMOTE_CUSTOM_DIR/$REMOTE_FOLDER" ]]; then
+        [[ -d "$REMOTE_CUSTOM_DIR/$REMOTE_FOLDER" && ! -L "$REMOTE_CUSTOM_DIR/$REMOTE_FOLDER" ]] ||
             die "Refusing to replace a non-directory or symlinked remote."
         HAD_REMOTE=1
-        $SUDO cp -a -- "$custom_dir/$REMOTE_FOLDER" "$BACKUP_DIR/remote-original"
+        $SUDO cp -a -- "$REMOTE_CUSTOM_DIR/$REMOTE_FOLDER" "$BACKUP_DIR/remote-original"
     fi
     for index in "${!CAPTURE_BINS[@]}"; do
         if [[ -e "${CAPTURE_BINS[index]}" || -L "${CAPTURE_BINS[index]}" ]]; then
@@ -325,9 +326,9 @@ snapshot_installation() {
 rollback_installation() {
     local index
     warn "Rolling back files from $BACKUP_DIR"
-    $SUDO rm -rf -- "$custom_dir/$REMOTE_FOLDER" || true
+    $SUDO rm -rf -- "$REMOTE_CUSTOM_DIR/$REMOTE_FOLDER" || true
     if (( HAD_REMOTE )); then
-        $SUDO cp -a -- "$BACKUP_DIR/remote-original" "$custom_dir/$REMOTE_FOLDER" || warn "Could not restore the previous remote."
+        $SUDO cp -a -- "$BACKUP_DIR/remote-original" "$REMOTE_CUSTOM_DIR/$REMOTE_FOLDER" || warn "Could not restore the previous remote."
     fi
     for index in "${!CAPTURE_BINS[@]}"; do
         $SUDO rm -f -- "${CAPTURE_BINS[index]}" || true
@@ -424,6 +425,7 @@ main() {
     zip_path="$(download_main_snapshot)"
     BACKUP_DIR="${custom_dir}/../../backups/kde-screen-remote-$(date +%Y%m%d-%H%M%S)-$"
     $SUDO mkdir -p "${BACKUP_DIR}"
+    REMOTE_CUSTOM_DIR="$custom_dir"
     snapshot_installation
     MUTATION_STARTED=1
 
