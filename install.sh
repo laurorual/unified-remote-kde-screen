@@ -423,7 +423,7 @@ main() {
     trap 'on_exit "$?"' EXIT
     local zip_path
     zip_path="$(download_main_snapshot)"
-    BACKUP_DIR="${custom_dir}/../../backups/kde-screen-remote-$(date +%Y%m%d-%H%M%S)-$"
+    BACKUP_DIR="${custom_dir}/../../backups/kde-screen-remote-$(date +%Y%m%d-%H%M%S)-$$"
     $SUDO mkdir -p "${BACKUP_DIR}"
     REMOTE_CUSTOM_DIR="$custom_dir"
     snapshot_installation
