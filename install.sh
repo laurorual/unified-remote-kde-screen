@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ZIP_NAME="KDE-Screen-Remote.zip"
 REMOTE_FOLDER="KDE Screen Remote"
 
 DEFAULT_REPO_OWNER="laurorual"
@@ -14,6 +13,11 @@ BAZZITE_HELPER_BIN="/usr/local/libexec/bazzite-screen-python"
 BAZZITE_DESKTOP_FILE="/usr/local/share/applications/org.bazzitescreen.helper.desktop"
 WORK_DIR=""
 BACKUP_DIR=""
+HOST_PYTHON=""
+MUTATION_STARTED=0
+HAD_REMOTE=0
+HAD_BIN=()
+HAD_DESKTOP=()
 
 # Status messages go to stderr so functions can safely return values on stdout.
 info()  { printf '\033[1;34m[INFO]\033[0m %s\n' "$*" >&2; }
@@ -32,8 +36,29 @@ configure_sudo() {
 
 capture_python_ok() {
     [[ -x $1 ]] || return 1
-    timeout 5s "$1" -c 'import dbus; from PIL import Image; from gi.repository import GLib' \
-        </dev/null >/dev/null 2>&1
+    timeout 10s "$1" - <<'PY' </dev/null >/dev/null 2>&1
+import sys
+if sys.version_info < (3, 9):
+    raise SystemExit("Python >= 3.9 required")
+import dbus
+from PIL import Image
+from gi.repository import GLib
+if not hasattr(Image, "Resampling"):
+    raise SystemExit("Pillow >= 9.1 required")
+PY
+}
+
+detect_host_python() {
+    # A developer SDK or an obsolete interpreter in PATH must not replace the OS Python.
+    if [[ -x /usr/bin/python3 ]]; then
+        HOST_PYTHON=$(readlink -f /usr/bin/python3)
+    elif command -v python3 >/dev/null 2>&1; then
+        HOST_PYTHON=$(readlink -f "$(command -v python3)")
+    else
+        die "Python 3 is required. Install your distribution's Python 3 and rerun."
+    fi
+    [[ -x $HOST_PYTHON ]] || die "Host Python is not executable: $HOST_PYTHON"
+    info "Using host Python: $HOST_PYTHON"
 }
 
 collect_capture_helpers() {
@@ -59,7 +84,7 @@ check_capture_helpers() {
     for index in "${!CAPTURE_BINS[@]}"; do
         binary=${CAPTURE_BINS[index]}; desktop=${CAPTURE_DESKTOPS[index]}
         if capture_python_ok "$binary" &&
-           cmp -s -- "$(readlink -f "$(command -v python3)")" "$binary" &&
+           cmp -s -- "$HOST_PYTHON" "$binary" &&
            [[ -f $desktop ]] && grep -Fxq -- "Exec=$binary" "$desktop" &&
            grep -Fxq -- 'X-KDE-DBUS-Restricted-Interfaces=org.kde.KWin.ScreenShot2' "$desktop"; then
             ok "Capture helper is current and its authorization entry is present: $binary"
@@ -71,18 +96,17 @@ check_capture_helpers() {
     (( failed == 0 ))
 }
 
-python_deps_ok() {
-    command -v python3 >/dev/null 2>&1 || return 1
-    python3 - <<'PY' >/dev/null 2>&1
-import dbus
-from PIL import Image
-from gi.repository import GLib
-PY
-}
+python_deps_ok() { capture_python_ok "$HOST_PYTHON"; }
+all_deps_ok() { python_deps_ok; }
 
-all_deps_ok() {
-    command -v python3 >/dev/null 2>&1 || return 1
-    python_deps_ok || return 1
+confirm_package_install() {
+    local purpose=$1 answer
+    warn "$purpose"
+    if [[ ! -t 0 ]]; then
+        die "Missing dependencies. Run interactively to approve package changes; no packages were installed."
+    fi
+    read -r -p "Allow the installer to install these host packages? [y/N] " answer
+    case $answer in y|Y|yes|YES) :;; *) die "Package installation declined; no packages were installed.";; esac
 }
 
 install_dependencies() {
@@ -93,11 +117,12 @@ install_dependencies() {
         return
     fi
 
-    warn "Some dependencies are missing. Trying to install them."
+    warn "Python >=3.9, dbus-python, PyGObject and Pillow >=9.1 are required."
+    confirm_package_install "Some host Python dependencies are missing. Installation may change system packages."
 
     # Prefer rpm-ostree on immutable Fedora-family systems such as Bazzite.
     if command -v rpm-ostree >/dev/null 2>&1 && [[ -f /run/ostree-booted ]]; then
-        info "Detected rpm-ostree system."
+        warn "Immutable rpm-ostree host: this will layer system packages and may require a reboot."
         $SUDO rpm-ostree install --apply-live \
             python3 \
             python3-dbus \
@@ -140,25 +165,51 @@ install_dependencies() {
     ok "Dependencies installed."
 }
 
-download_release_zip() {
-    local download_url
-    download_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/${ZIP_NAME}"
-
-    info "Downloading ${ZIP_NAME} from GitHub..."
-
-    python3 - "${download_url}" "${WORK_DIR}/${ZIP_NAME}" <<'PY'
+download_main_snapshot() {
+    local archive="$WORK_DIR/KDE-Screen-Remote.zip"
+    local download_url="https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/main"
+    info "Fetching current main branch source from GitHub..."
+    "$HOST_PYTHON" - "$download_url" "$archive" <<'PY'
+import io
+import pathlib
 import sys
+import tarfile
 import urllib.request
+import zipfile
 
-url, output = sys.argv[1], sys.argv[2]
-with urllib.request.urlopen(url, timeout=30) as response:
-    data = response.read()
-with open(output, "wb") as f:
-    f.write(data)
+url, output = sys.argv[1:]
+required = (
+    "meta.prop", "layout.xml", "remote.lua", "kde_screen_remote_streamer.py",
+    "cursor_tracker.js", "icon.png", "icon_hires.png", "CHANGELOG.md",
+    "README.md", "LICENSE",
+)
+request = urllib.request.Request(url, headers={"User-Agent": "kde-screen-remote-installer"})
+with urllib.request.urlopen(request, timeout=45) as response:
+    data = response.read(20 * 1024 * 1024 + 1)
+if len(data) > 20 * 1024 * 1024:
+    raise RuntimeError("Source archive exceeds the 20 MiB safety limit")
+files = {}
+with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as source:
+    for entry in source:
+        path = pathlib.PurePosixPath(entry.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("Unsafe source archive path")
+        if not (entry.isfile() or entry.isdir()):
+            raise ValueError("Unsupported source archive entry")
+        if len(path.parts) == 2 and path.parts[1] in required and entry.isfile():
+            handle = source.extractfile(entry)
+            if handle is None:
+                raise ValueError("Cannot read source entry")
+            files[path.parts[1]] = handle.read()
+missing = sorted(set(required) - set(files))
+if missing:
+    raise ValueError("Source archive lacks: " + ", ".join(missing))
+with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for name in required:
+        archive.writestr("KDE Screen Remote/" + name, files[name])
 PY
-
-    [[ -s "${WORK_DIR}/${ZIP_NAME}" ]] || die "Downloaded ZIP is empty."
-    printf '%s\n' "${WORK_DIR}/${ZIP_NAME}"
+    [[ -s "$archive" ]] || die "Downloaded source was empty."
+    printf '%s\n' "$archive"
 }
 
 install_remote_files() {
@@ -172,7 +223,7 @@ install_remote_files() {
 
     tmp_dir="$(mktemp -d "${WORK_DIR}/extract.XXXXXX")"
 
-    python3 - "${zip_path}" "${tmp_dir}" <<'PY'
+    "$HOST_PYTHON" - "${zip_path}" "${tmp_dir}" <<'PY'
 import sys
 import zipfile
 from pathlib import Path
@@ -212,7 +263,7 @@ PY
 
 install_authorized_python_helper() {
     local python_real staged helper_bin=${1:-$HELPER_BIN} desktop_file=${2:-$DESKTOP_FILE}
-    python_real="$(readlink -f "$(command -v python3)")"
+    python_real="$HOST_PYTHON"
 
     info "Refreshing capture helper from the current host Python: $helper_bin"
     capture_python_ok "$python_real" || die "Host Python cannot load the capture dependencies."
@@ -253,6 +304,63 @@ EOF
     ok "KWin ScreenShot2 authorization helper installed."
 }
 
+snapshot_installation() {
+    local index
+    if [[ -e "$custom_dir/$REMOTE_FOLDER" || -L "$custom_dir/$REMOTE_FOLDER" ]]; then
+        [[ -d "$custom_dir/$REMOTE_FOLDER" && ! -L "$custom_dir/$REMOTE_FOLDER" ]] ||
+            die "Refusing to replace a non-directory or symlinked remote."
+        HAD_REMOTE=1
+        $SUDO cp -a -- "$custom_dir/$REMOTE_FOLDER" "$BACKUP_DIR/remote-original"
+    fi
+    for index in "${!CAPTURE_BINS[@]}"; do
+        if [[ -e "${CAPTURE_BINS[index]}" || -L "${CAPTURE_BINS[index]}" ]]; then
+            [[ -f "${CAPTURE_BINS[index]}" && ! -L "${CAPTURE_BINS[index]}" ]] ||
+                die "Refusing to replace a symlink or non-file helper: ${CAPTURE_BINS[index]}"
+            HAD_BIN[index]=1
+            $SUDO cp -a -- "${CAPTURE_BINS[index]}" "$BACKUP_DIR/helper-$index"
+        else HAD_BIN[index]=0; fi
+        if [[ -e "${CAPTURE_DESKTOPS[index]}" || -L "${CAPTURE_DESKTOPS[index]}" ]]; then
+            [[ -f "${CAPTURE_DESKTOPS[index]}" && ! -L "${CAPTURE_DESKTOPS[index]}" ]] ||
+                die "Refusing to replace a symlink or non-file desktop entry."
+            HAD_DESKTOP[index]=1
+            $SUDO cp -a -- "${CAPTURE_DESKTOPS[index]}" "$BACKUP_DIR/desktop-$index"
+        else HAD_DESKTOP[index]=0; fi
+    done
+}
+
+rollback_installation() {
+    local index
+    warn "Rolling back files from $BACKUP_DIR"
+    $SUDO rm -rf -- "$custom_dir/$REMOTE_FOLDER" || true
+    if (( HAD_REMOTE )); then
+        $SUDO cp -a -- "$BACKUP_DIR/remote-original" "$custom_dir/$REMOTE_FOLDER" || warn "Could not restore the previous remote."
+    fi
+    for index in "${!CAPTURE_BINS[@]}"; do
+        $SUDO rm -f -- "${CAPTURE_BINS[index]}" || true
+        if (( HAD_BIN[index] )); then
+            $SUDO cp -a -- "$BACKUP_DIR/helper-$index" "${CAPTURE_BINS[index]}" || warn "Could not restore a capture helper."
+        fi
+        $SUDO rm -f -- "${CAPTURE_DESKTOPS[index]}" || true
+        if (( HAD_DESKTOP[index] )); then
+            $SUDO cp -a -- "$BACKUP_DIR/desktop-$index" "${CAPTURE_DESKTOPS[index]}" || warn "Could not restore a desktop entry."
+        fi
+    done
+    if command -v systemctl >/dev/null 2>&1 &&
+       systemctl --user is-active --quiet unified-remote.service 2>/dev/null; then
+        systemctl --user restart unified-remote.service || warn "Restart the server manually after rollback."
+    fi
+}
+
+on_exit() {
+    local status=$1
+    trap - EXIT
+    if (( status != 0 && MUTATION_STARTED )); then
+        rollback_installation || warn "Rollback was incomplete; manual backups are in $BACKUP_DIR"
+    fi
+    [[ -z $WORK_DIR ]] || rm -rf -- "$WORK_DIR"
+    exit "$status"
+}
+
 restart_unified_remote_if_possible() {
     if command -v systemctl >/dev/null 2>&1 && \
        systemctl --user is-active --quiet unified-remote.service 2>/dev/null; then
@@ -280,7 +388,7 @@ main() {
             *) die "Unknown option: $1";;
         esac
     done
-    printf '\nKDE Screen Remote installer (Latest release)\n\n'
+    printf '\nKDE Screen Remote installer (main branch)\n\n'
 
     if [[ "${XDG_SESSION_TYPE:-}" != "wayland" ]]; then
         warn "Current session does not report XDG_SESSION_TYPE=wayland."
@@ -307,20 +415,23 @@ main() {
     command -v timeout >/dev/null || die "timeout (coreutils) is required for capture-helper checks."
     collect_capture_helpers "$custom_dir"
     if (( check_only )); then
-        all_deps_ok || die "Host Python capture dependencies are unavailable."
+        detect_host_python
+        all_deps_ok || die "Host Python >=3.9, Pillow >=9.1, D-Bus or GI modules are missing."
         check_capture_helpers
         return
     fi
     configure_sudo
+    detect_host_python
     install_dependencies
 
     WORK_DIR="$(mktemp -d)"
-    trap 'rm -rf -- "${WORK_DIR}"' EXIT
-    BACKUP_DIR="${custom_dir}/../../backups/kde-screen-remote-$(date +%Y%m%d-%H%M%S)-$$"
-    $SUDO mkdir -p "${BACKUP_DIR}"
-
+    trap 'on_exit "$?"' EXIT
     local zip_path
-    zip_path="$(download_release_zip)"
+    zip_path="$(download_main_snapshot)"
+    BACKUP_DIR="${custom_dir}/../../backups/kde-screen-remote-$(date +%Y%m%d-%H%M%S)-$"
+    $SUDO mkdir -p "${BACKUP_DIR}"
+    snapshot_installation
+    MUTATION_STARTED=1
 
     install_remote_files "${zip_path}" "${custom_dir}"
     for index in "${!CAPTURE_BINS[@]}"; do
@@ -329,8 +440,9 @@ main() {
     check_capture_helpers || die "Capture-helper verification failed. Backups: $BACKUP_DIR"
     if (( restart )); then restart_unified_remote_if_possible; fi
 
+    MUTATION_STARTED=0
     printf '\n'
-    ok "KDE Screen Remote from Releases > Latest is installed."
+    ok "KDE Screen Remote from the current main branch is installed."
     info "Backups: ${BACKUP_DIR}"
     info "Open Unified Remote on your phone and select '${REMOTE_FOLDER}'."
 }
