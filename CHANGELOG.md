@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.0.2 — 2026-11-08
+
+- Fix blue/red channel swaps when KWin returns RGBX8888 or RGBA8888 frames.
+- Preserve ScreenShot2 pixel-format metadata and decode each frame accordingly,
+  retaining native-endian RGB32/ARGB32 and RGB888 support.
+- Correctly unpremultiply alpha and honor row padding; reject unsupported formats
+  instead of silently guessing a channel order.
+- Add known-color, JPEG, alpha, endianness and capture-metadata regressions; run
+  the test suite before publishing the versionless Latest release archive.
+
 ## 2026-11-08 — Capture installer checks
 
 - Keep Python capture-helper checks in the screen installer, separate from the

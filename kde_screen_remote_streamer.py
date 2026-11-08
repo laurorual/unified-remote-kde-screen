@@ -8,6 +8,7 @@ import json
 import os
 import select
 import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -211,6 +212,7 @@ class KWinCapture:
                 width = int(result["width"])
                 height = int(result["height"])
                 stride = int(result["stride"])
+                pixel_format = int(result["format"])
 
                 data = self.read_exact(
                     read_fd,
@@ -239,6 +241,7 @@ class KWinCapture:
                     stride,
                     screen,
                     capture_ms,
+                    pixel_format,
                 )
 
             finally:
@@ -442,6 +445,35 @@ def read_zoom():
     return 2.0
 
 
+def decode_frame(data, width, height, stride, pixel_format, *, byteorder=None):
+    """Decode ScreenShot2's QImage format, including native-endian legacy pixels."""
+    byteorder = sys.byteorder if byteorder is None else byteorder
+    if byteorder not in ("little", "big"):
+        raise ValueError(f"Unsupported byte order: {byteorder}")
+    little = byteorder == "little"
+    # Qt ARGB32/RGB32 are native-endian words; RGB(X/A)8888 are byte-ordered.
+    formats = {
+        4: ("RGB", "BGRX" if little else "XRGB", 4),  # RGB32
+        5: ("RGBA", "BGRA" if little else "ARGB", 4),  # ARGB32
+        6: ("RGBa", "BGRa" if little else "aRGB", 4),  # ARGB32 premultiplied
+        13: ("RGB", "RGB", 3),  # RGB888
+        16: ("RGB", "RGBX", 4),  # RGBX8888
+        17: ("RGBA", "RGBA", 4),  # RGBA8888
+        18: ("RGBa", "RGBa", 4),  # RGBA8888 premultiplied
+    }
+    try:
+        mode, raw_mode, bytes_per_pixel = formats[pixel_format]
+    except KeyError:
+        raise ValueError(f"Unsupported KWin pixel format: {pixel_format}") from None
+    if (width <= 0 or height <= 0 or stride < width * bytes_per_pixel
+            or len(data) < stride * height):
+        raise ValueError("Invalid KWin frame dimensions, stride or buffer length")
+    image = Image.frombytes(mode, (width, height), data, "raw", raw_mode, stride, 1)
+    if mode == "RGBa":
+        image = image.convert("RGBA")  # Undo premultiplication before dropping alpha.
+    return image.convert("RGB")
+
+
 def encode_jpeg(
     data,
     width,
@@ -451,18 +483,12 @@ def encode_jpeg(
     cursor_position,
     max_width=960,
     quality=55,
+    *,
+    pixel_format,
 ):
     started = time.perf_counter()
 
-    image = Image.frombytes(
-        "RGBA",
-        (width, height),
-        data,
-        "raw",
-        "BGRA",
-        stride,
-        1,
-    ).convert("RGB")
+    image = decode_frame(data, width, height, stride, pixel_format)
 
     zoom = read_zoom()
 
@@ -616,6 +642,7 @@ def main():
                 stride,
                 screen,
                 capture_ms,
+                pixel_format,
             ) = capture.capture_active()
 
             cursor_position, geometry = cursor_tracker.snapshot(screen)
@@ -639,6 +666,7 @@ def main():
                 cursor_position,
                 args.width,
                 args.quality,
+                pixel_format=pixel_format,
             )
 
             frame_path = (
@@ -681,7 +709,7 @@ def main():
                 )
 
                 log(
-                    f"frame={seq} screen={screen} "
+                    f"frame={seq} screen={screen} format={pixel_format} "
                     f"capture={capture_ms:.1f}ms "
                     f"jpeg={jpeg_ms:.1f}ms "
                     f"total={total_ms:.1f}ms "

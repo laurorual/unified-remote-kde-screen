@@ -31,7 +31,7 @@ class ZoomTests(unittest.TestCase):
     def encode(self, geometry, cursor, zoom):
         with patch.object(streamer, "read_zoom", return_value=zoom):
             return streamer.encode_jpeg(self.pixels, 320, 180, 1280,
-                                        geometry, cursor, 160, 90)
+                                        geometry, cursor, 160, 90, pixel_format=6)
 
     def test_second_monitor_follows_horizontally_at_both_zoom_levels(self):
         for zoom in (2, 3):

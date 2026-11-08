@@ -55,7 +55,7 @@ end
 local function dlog(text)
     pcall(function()
         log.info(
-            "[KDE Screen Remote v1.0.1] " ..
+            "[KDE Screen Remote v1.0.2] " ..
             tostring(text)
         );
     end);
