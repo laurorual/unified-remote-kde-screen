@@ -1,68 +1,85 @@
 # KDE Screen Remote
 
-A Unified Remote remote for **KDE Plasma on Wayland**, also used locally as
-**Bazzite Screen**. It provides a live screen preview, cursor-following 2×/3× zoom
-and a multitouch trackpad with clicks, scrolling and dragging.
+A Unified Remote custom remote for **KDE Plasma on Wayland**, also formerly used
+locally as **Bazzite Screen**. It offers an active-screen preview, cursor-following
+2×/3× zoom, and a multitouch trackpad with scrolling, clicks and dragging.
 
 ## Install or update
 
-Run from your desktop account. No clone is required:
+Run as your normal desktop user. Unified Remote Server must already be installed.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/laurorual/unified-remote-kde-screen/main/install.sh -o install.sh
 bash install.sh
 ```
 
-Select your server's **remotes/Custom** directory when prompted. For example:
+The installer asks for the server's `remotes/Custom` directory, or you can supply it:
 
 ```bash
 bash install.sh --custom-dir "$HOME/Downloads/UnifiedRemoteServer/remotes/Custom"
 ```
 
-The installer checks dependencies, downloads
-[KDE-Screen-Remote.zip from Releases > Latest](https://github.com/laurorual/unified-remote-kde-screen/releases/latest/download/KDE-Screen-Remote.zip),
-backs up existing files and configures the authorized Python capture helper.
-It uses `sudo` when needed for dependencies and files under `/usr/local`.
-After installation, reopen **KDE Screen Remote** in the mobile app.
+**Updates are manual:** rerun the same `install.sh`. It downloads the **current
+`main` branch**, not a GitHub Release or a manually published ZIP. The installer
+extracts only the expected remote files, validates the downloaded source, backs
+up existing files, refreshes its authorized capture helpers, and restarts an
+active `unified-remote.service` when possible.
 
-## Requirements
+Reopen **KDE Screen Remote** on your phone afterward. If the server is not
+managed by that user service, restart it manually.
 
-- KDE Plasma Wayland and Unified Remote Server for Linux.
-- Python 3, dbus-python, Pillow and PyGObject/GLib.
-- KWin's ScreenShot2 and scripting interfaces.
+## Requirements and dependency handling
 
-The installer supports dependency setup on Fedora, Bazzite/rpm-ostree,
-Debian/Ubuntu and Arch. Other distributions need the dependencies installed
-manually. `kscreen-doctor` is not required.
+- KDE Plasma Wayland, Unified Remote Server for Linux, and KWin ScreenShot2 / scripting APIs.
+- **Host** Python 3.9+ with dbus-python, PyGObject/GLib, and **Pillow 9.1+**.
+- Bash, coreutils (including `timeout`), and working HTTPS access to GitHub.
+- The installer supports Fedora, Bazzite/rpm-ostree, Debian/Ubuntu, and Arch.
 
-## Capture helper and backups
+The installer deliberately uses the host Python at `/usr/bin/python3` when
+available, rather than a developer toolchain or virtual environment earlier in
+`PATH`. It checks the interpreter and its required modules, asks for **explicit
+permission before installing missing host packages**, and validates the modules
+again afterward. On an immutable rpm-ostree system, package layering is clearly
+announced beforehand; a reboot may be needed.
 
-The screenshot helper is a copied Python executable. After a system Python
-upgrade, rerun this installer to refresh it and avoid missing-library errors.
-It also refreshes the legacy Bazzite Screen helper when that remote uses it.
-Bazzite Screen controls and Wayland keyboard files are preserved.
+**Important after Bazzite/Fedora system updates:** the authorized helper is a
+copy of the host Python executable in `/usr/local/libexec`. A Python upgrade
+can make the old copy incompatible with system libraries. Simply rerun
+`install.sh` to recreate it from the current host Python, without reinstalling
+Unified Remote itself.
 
-Check the current helpers without installing packages, changing files or
-restarting the service:
+## Backups, checks and recovery
+
+The installer backs up the prior remote, its Python helper, and its desktop
+authorization entry before replacing them. On a failed installation it attempts
+to roll back all affected files and prints the backup location.
 
 ```bash
+# Check current host dependencies and capture helper without modifying anything:
 bash install.sh --custom-dir "$HOME/Downloads/UnifiedRemoteServer/remotes/Custom" --check
+
+# Install but restart the server yourself:
+bash install.sh --custom-dir "$HOME/Downloads/UnifiedRemoteServer/remotes/Custom" --no-restart
 ```
 
-Use `--no-restart` to restart the server yourself. Backups are stored in the
-server's `backups/` directory; the installer prints their location.
+It also preserves and refreshes the older **Bazzite Screen** capture helper
+when the installed legacy remote specifically references the recognized helper.
+It does not touch mouse/keyboard fixes managed by Wayland Fix.
 
 ## Keyboard input
 
-For symbols and accented text on KDE Wayland, install the separate
-[Wayland Fix](https://github.com/laurorual/Unified-Remote-Linux-Wayland-Fix).
-That project's mouse/keyboard runtime does not require Python.
+To add symbols and accented text support on KDE Wayland, use the independent
+[Unified Remote Wayland Fix](https://github.com/laurorual/Unified-Remote-Linux-Wayland-Fix).
+The screen-capture remote itself does not require the keyboard fix.
 
 ## Development
 
-Remote source files are in the repository root. Build the ZIP with
-`python3 scripts/build_release.py` and run regression checks with
-`python3 -m unittest discover -s tests -v`.
+Run regression checks with:
 
-See [CHANGELOG.md](CHANGELOG.md) for history. Tested on Bazzite/KDE Wayland with
-the Unified Remote Android client.
+```bash
+bash -n install.sh
+python3 -m unittest discover -s tests -v
+```
+
+See [CHANGELOG.md](CHANGELOG.md) for project history. End-to-end screen capture
+and the phone receiver still require testing on a running KDE Wayland session.
