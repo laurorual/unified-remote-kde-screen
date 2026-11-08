@@ -110,59 +110,53 @@ confirm_package_install() {
 }
 
 install_dependencies() {
-    info "Checking runtime dependencies..."
-
+    info "Checking host Python runtime dependencies..."
     if all_deps_ok; then
-        ok "All runtime dependencies are already installed."
+        ok "Host Python and all capture modules are compatible."
         return
     fi
 
-    warn "Python >=3.9, dbus-python, PyGObject and Pillow >=9.1 are required."
-    confirm_package_install "Some host Python dependencies are missing. Installation may change system packages."
+    "$HOST_PYTHON" -c 'import sys; assert sys.version_info >= (3, 9)' ||
+        die "Python >= 3.9 is required; update the host Python first."
+    local -a packages=()
+    local manager='' immutable=0
 
-    # Prefer rpm-ostree on immutable Fedora-family systems such as Bazzite.
-    if command -v rpm-ostree >/dev/null 2>&1 && [[ -f /run/ostree-booted ]]; then
-        warn "Immutable rpm-ostree host: this will layer system packages and may require a reboot."
-        $SUDO rpm-ostree install --apply-live \
-            python3 \
-            python3-dbus \
-            python3-pillow \
-            python3-gobject
+    if [[ -f /run/ostree-booted ]] && command -v rpm-ostree >/dev/null 2>&1; then
+        manager=rpm-ostree; immutable=1
+    elif command -v dnf >/dev/null 2>&1; then manager=dnf
+    elif command -v apt-get >/dev/null 2>&1; then manager=apt-get
+    elif command -v pacman >/dev/null 2>&1; then manager=pacman
+    else die "Unsupported package manager. Install dbus-python, PyGObject and Pillow >=9.1 for $HOST_PYTHON."; fi
 
-    elif command -v dnf >/dev/null 2>&1; then
-        info "Detected Fedora/RHEL-style system."
-        $SUDO dnf install -y \
-            python3 \
-            python3-dbus \
-            python3-pillow \
-            python3-gobject
-
-    elif command -v apt-get >/dev/null 2>&1; then
-        info "Detected Debian/Ubuntu-style system."
-        $SUDO apt-get update
-        $SUDO apt-get install -y \
-            python3 \
-            python3-dbus \
-            python3-pil \
-            python3-gi
-
-    elif command -v pacman >/dev/null 2>&1; then
-        info "Detected Arch-style system."
-        $SUDO pacman -S --needed --noconfirm \
-            python \
-            dbus-python \
-            python-pillow \
-            python-gobject
-
-    else
-        die "Unsupported package manager. Install Python 3, dbus-python, Pillow and PyGObject/GLib manually, then rerun this script."
+    if ! "$HOST_PYTHON" -c 'import dbus' >/dev/null 2>&1; then
+        case $manager in rpm-ostree|dnf) packages+=(python3-dbus);; apt-get) packages+=(python3-dbus);; pacman) packages+=(dbus-python);; esac
     fi
+    if ! "$HOST_PYTHON" -c 'from gi.repository import GLib' >/dev/null 2>&1; then
+        case $manager in rpm-ostree|dnf) packages+=(python3-gobject);; apt-get) packages+=(python3-gi);; pacman) packages+=(python-gobject);; esac
+    fi
+    if ! "$HOST_PYTHON" -c 'from PIL import Image; assert hasattr(Image, "Resampling")' >/dev/null 2>&1; then
+        case $manager in rpm-ostree|dnf) packages+=(python3-pillow);; apt-get) packages+=(python3-pil);; pacman) packages+=(python-pillow);; esac
+    fi
+    (( ${#packages[@]} > 0 )) ||
+        die "Python runtime validation failed, but no missing package was identified. Check Python/library ABI compatibility."
+
+    if (( immutable )); then
+        warn "Immutable host detected. rpm-ostree will LAYER these packages, modifying the system deployment and possibly requiring a reboot."
+    fi
+    confirm_package_install "Missing packages: ${packages[*]}"
+    case $manager in
+        rpm-ostree) $SUDO rpm-ostree install --apply-live "${packages[@]}";;
+        dnf) $SUDO dnf install -y "${packages[@]}";;
+        apt-get)
+            $SUDO apt-get update
+            $SUDO apt-get install -y "${packages[@]}";;
+        pacman) $SUDO pacman -S --needed --noconfirm "${packages[@]}";;
+    esac
 
     if ! all_deps_ok; then
-        die "Dependencies are still unavailable after installation. On an immutable system, a reboot may be required before rerunning the installer."
+        die "Python runtime is still incompatible after installing packages. On immutable systems, reboot and rerun this installer."
     fi
-
-    ok "Dependencies installed."
+    ok "Capture Python dependencies verified."
 }
 
 download_main_snapshot() {
